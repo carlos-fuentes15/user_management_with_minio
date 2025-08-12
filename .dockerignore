@@ -7,3 +7,4 @@ qr_codes
 .env
 .coverage
 
+__pycache__/
