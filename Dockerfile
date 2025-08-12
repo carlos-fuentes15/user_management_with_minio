@@ -1,60 +1,84 @@
-# Define a base stage with a Debian Bookworm base image that includes the latest glibc update
-FROM python:3.12-bookworm as base
+# =========================
+# Build stage
+# =========================
+FROM python:3.12-bookworm AS base
 
-# Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONFAULTHANDLER=1 \
-    PIP_NO_CACHE_DIR=true \
+    PIP_NO_CACHE_DIR=1 \
     PIP_DEFAULT_TIMEOUT=100 \
-    PIP_DISABLE_PIP_VERSION_CHECK=on \
-    QR_CODE_DIR=/myapp/qr_codes
+    PIP_DISABLE_PIP_VERSION_CHECK=on
 
 WORKDIR /myapp
 
-# Update system and specifically upgrade libc-bin to the required security patch version
+# Build-time OS deps to compile wheels (Pillow, psycopg/cryptography, cffi, etc.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     gcc \
     libpq-dev \
-    && apt-get install -y libc-bin=2.36-9+deb12u7 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    libffi-dev \
+    libjpeg62-turbo-dev \
+    zlib1g-dev \
+    libpng-dev \
+    libfreetype6-dev \
+    curl \
+    ca-certificates \
+    dos2unix \
+ && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies in /.venv
-COPY requirements.txt .
-RUN python -m venv /.venv \
-    && . /.venv/bin/activate \
-    && pip install --upgrade pip \
-    && pip install -r requirements.txt
+# Create a persistent virtualenv and make it the default Python for all next layers
+ENV VIRTUAL_ENV=/opt/venv
+RUN python -m venv "$VIRTUAL_ENV"
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# Define a second stage for the runtime, using the same Debian Bookworm slim image
-FROM python:3.12-slim-bookworm as final
+# Copy requirements early to leverage Docker layer caching
+COPY requirements.txt ./
 
-# Upgrade libc-bin in the final stage to ensure security patch is applied
-RUN apt-get update && apt-get install -y libc-bin=2.36-9+deb12u7 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# Normalize CRLF, show context, then install with extra verbosity
+RUN dos2unix requirements.txt || true \
+ && python -V \
+ && pip -V \
+ && echo "----- requirements.txt -----" \
+ && cat requirements.txt \
+ && echo "----------------------------" \
+ && python -m pip install --upgrade pip setuptools wheel \
+ && pip install --no-cache-dir -vv --prefer-binary -r requirements.txt
 
-# Copy the virtual environment from the base stage
-COPY --from=base /.venv /.venv
+# Copy the rest of the app AFTER deps to leverage Docker layer caching
+COPY . .
 
-# Set environment variable to ensure all python commands run inside the virtual environment
-ENV PATH="/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1 \
-    PYTHONFAULTHANDLER=1 \
-    QR_CODE_DIR=/myapp/qr_codes
+# =========================
+# Runtime stage
+# =========================
+FROM python:3.12-slim-bookworm AS final
 
-# Set the working directory
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONFAULTHANDLER=1
+
 WORKDIR /myapp
 
-# Create and switch to a non-root user
+# Runtime libs needed at import/use time (Pillow, libpq for psycopg2, etc.)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libjpeg62-turbo \
+    zlib1g \
+    libpng16-16 \
+    libfreetype6 \
+    libpq5 \
+    ca-certificates \
+    curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# Bring the venv from the build stage and make it default
+COPY --from=base /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Create a non-root user and copy source with correct ownership
 RUN useradd -m myuser
 USER myuser
-
-# Copy application code with appropriate ownership
 COPY --chown=myuser:myuser . .
 
-# Inform Docker that the container listens on the specified port at runtime.
+# Expose API port
 EXPOSE 8000
 
-# Use ENTRYPOINT to specify the executable when the container starts.
-ENTRYPOINT ["uvicorn", "app.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
+# Default app command (override in docker-compose if needed)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
