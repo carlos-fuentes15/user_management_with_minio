@@ -85,3 +85,4 @@ networks:
 volumes:
   postgres-data:
   minio-data:
+# This service runs the FastAPI app
