@@ -1,2 +1,1 @@
-## Docker Hub Deployment Status
-\nExample avatar upload:\ncurl -X POST ...
+
