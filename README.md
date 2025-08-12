@@ -1,1 +1,0 @@
-# user_management_with_minio
