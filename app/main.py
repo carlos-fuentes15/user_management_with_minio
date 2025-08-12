@@ -41,3 +41,7 @@ app.include_router(user_routes.router)
 
 
 # Startup checks for DB and MinIO
+
+@app.get('/health')
+async def health():
+    return {'status': 'ok'}
